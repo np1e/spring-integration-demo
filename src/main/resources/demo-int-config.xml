@@ -1,0 +1,83 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:int="http://www.springframework.org/schema/integration"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:task="http://www.springframework.org/schema/task"
+       xmlns:int-http="http://www.springframework.org/schema/integration/http"
+       xsi:schemaLocation="http://www.springframework.org/schema/beans
+            http://www.springframework.org/schema/beans/spring-beans.xsd
+            http://www.springframework.org/schema/integration
+			https://www.springframework.org/schema/integration/spring-integration.xsd
+			http://www.springframework.org/schema/task
+			http://www.springframework.org/schema/task/spring-task.xsd
+			http://www.springframework.org/schema/integration/http
+			http://www.springframework.org/schema/integration/http/spring-integration-http.xsd">
+
+
+    <int-http:inbound-channel-adapter id="mcTrackingEventChannelAdapter" channel="trackingEventRequests" supported-methods="POST" path="/trackmcevent">
+        <int-http:request-mapping consumes="application/json"/>
+    </int-http:inbound-channel-adapter>
+    <int:channel id="trackingEventRequests">
+        <int:queue capacity="150"/>
+        <int:interceptors>
+            <int:wire-tap channel="logger"/>
+        </int:interceptors>
+    </int:channel>
+
+    <int:gateway id="marketingCloudTrackingService"
+                 service-interface="com.hansgrohe.springintegrationdemo.MarketingCloudService"
+                 default-request-channel="trackingEventRequests"
+                 />
+
+    <int:channel id="eventToJsonChannel">
+        <int:queue capacity="150"/>
+    </int:channel>
+
+    <int:channel id="cpiRequestChannel">
+        <int:queue capacity="150"/>
+    </int:channel>
+    <int:channel id="cpiReplyChannel">
+        <int:interceptors>
+            <int:wire-tap channel="logger"/>
+        </int:interceptors>
+    </int:channel>
+    <int:service-activator input-channel="cpiReplyChannel" ref="cpiReplyHandler" method="handleSCPIReply"/>
+    <bean id="cpiReplyHandler" class="com.hansgrohe.springintegrationdemo.SCPIService"/>
+
+    <int:logging-channel-adapter id="logger" log-full-message="true" level="DEBUG"/>
+
+    <int:object-to-json-transformer input-channel="eventToJsonChannel" output-channel="cpiRequestChannel">
+        <int:poller fixed-rate="1000"/>
+    </int:object-to-json-transformer>
+
+    <bean id="trackingEventTransformerBean" class="com.hansgrohe.springintegrationdemo.MCTrackingEvenTransformer"/>
+    <int:transformer id="trackingEventTransformer"
+                     ref="trackingEventTransformerBean"
+                     method="convertEventToRequest" input-channel="trackingEventRequests" output-channel="eventToJsonChannel">
+        <int:poller fixed-rate="1000"/>
+    </int:transformer>
+
+    <task:executor id="pool"
+                   pool-size="5-25"
+                   queue-capacity="150"/>
+
+    <int-http:outbound-gateway request-channel="cpiRequestChannel"
+                               reply-channel="cpiReplyChannel"
+                               expected-response-type="java.lang.String"
+                               http-method="POST"
+                               url="${scpi.leadform.endpoint}"
+                               rest-template="customRestTemplate">
+        <int:poller fixed-rate="5000" task-executor="pool"/>
+    </int-http:outbound-gateway>
+
+    <bean id="marketinCloudErrorHandler" class="com.hansgrohe.springintegrationdemo.MarketingCloudTrackingErrorHandler"/>
+
+    <bean id="customRestTemplate" class="org.springframework.web.client.RestTemplate">
+        <property name="interceptors">
+            <list merge="true">
+                <ref bean="httpRequestLoggingInterceptor"/>
+            </list>
+        </property>
+    </bean>
+    <bean id="httpRequestLoggingInterceptor" class="com.hansgrohe.springintegrationdemo.LoggingRequestInterceptor"/>
+
+</beans>
